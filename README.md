@@ -87,7 +87,7 @@
 
 ## 📁 项目结构说明（简要）
 
-![image-20251220122228831](C:/Users/jihua/AppData/Roaming/Typora/typora-user-images/image-20251220122228831.png)
+![image-20251220122228831](./tms-logo/demo-png/TMS.png)
 
 ---
 
