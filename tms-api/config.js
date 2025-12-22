@@ -22,8 +22,6 @@ const config = {
       credentialsRequired: true,
     }
   },
-  // 文件上传条数Max
-  MaxFile: 20,
   // 动态获取当前日期
   get pub_date() {
     return dayjs(new Date()).format('YYYY-MM-DD')

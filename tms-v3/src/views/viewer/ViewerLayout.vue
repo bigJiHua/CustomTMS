@@ -148,7 +148,9 @@ onUnmounted(() => {
   <div class="center" :class="{ lock: isLock }">
     <div class="header">
       <div class="title">
-        <img src="/logo.webp" alt="" style="width: 80px; height: 50px" />
+        <router-link to="/admin" style="direction: none">
+          <img src="/logo.webp" alt="" style="width: 80px; height: 50px" />
+        </router-link>
       </div>
       <div class="menu">
         {{ heartbeatTime }}
@@ -205,7 +207,12 @@ onUnmounted(() => {
       rgba(0, 0, 0, 0.9) 100%
     ),
     /* 上亮下暗（金属面板） */
-      linear-gradient(180deg, #4b4f53 0%, #34383c 55%, /* 中段更亮 */ #1b1e21 100%);
+      linear-gradient(
+        180deg,
+        #4b4f53 0%,
+        #34383c 55%,
+        /* 中段更亮 */ #1b1e21 100%
+      );
 
   /* 👇 关键 */
   transition:

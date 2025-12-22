@@ -49,7 +49,6 @@ const loadMovies = async () => {
   try {
     loading.value = true
     const { data: res } = await GetDataFunc.GetMoviesInfo('get')
-    console.log(res.data)
 
     // 👇 永远保证是数组，防止 el-table 炸
     if (Array.isArray(res.data)) {

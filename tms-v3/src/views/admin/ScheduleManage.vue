@@ -8,10 +8,10 @@ import ScheduleItem from '@/components/ScheduleItem.vue'
 import DataApi from '@/utils/API/Data'
 import ConfigApi from '@/utils/API/System'
 
-/* ========= 基础配置 ========= */
-const emptyInterval = ref(14)
+/* ================== 基础配置 ================== */
+const emptyInterval = ref(12)
 
-/* ========= 数据 ========= */
+/* ================== 数据 ================== */
 const movieList = ref([])
 const hallList = ref([])
 const currentHallId = ref('')
@@ -19,83 +19,81 @@ const allSchedule = ref({})
 
 const currentSchedule = computed(() => allSchedule.value[currentHallId.value] || [])
 
-// 日期限制：今天 ±3 天
+/** ✅【修复】模板中使用了但之前没定义 */
+const currentMovieCount = computed(() => currentSchedule.value.length)
+
+/* ================== 日期 ================== */
 const Show_date = ref(dayjs().format('YYYY-MM-DD'))
 
 const disabledDate = (time) => {
   const today = dayjs().startOf('day')
-  const min = today.subtract(3, 'day')
-  const max = today.add(3, 'day')
-  return dayjs(time).isBefore(min, 'day') || dayjs(time).isAfter(max, 'day')
+  return (
+    dayjs(time).isBefore(today.subtract(3, 'day'), 'day') ||
+    dayjs(time).isAfter(today.add(3, 'day'), 'day')
+  )
 }
 
+/* ================== 拖拽引用 ================== */
 const movieSourceRef = ref(null)
 const scheduleDropRef = ref(null)
 
-/* ========= 时间工具（影院业务日：06:00 → 次日） ========= */
-
-/**
- * 将 "HH:MM" 转成「影院业务分钟」
- * 规则：06:00 作为业务日起点
- * - 06:00~23:59 => 原分钟
- * - 00:00~05:59 => 视为次日 => +24小时
- */
+/* ================== 时间工具（影院业务日 06:00 → 次日） ================== */
 const toBusinessMinutes = (time) => {
-  if (!time || typeof time !== 'string') return Infinity
   if (!/^\d{2}:\d{2}$/.test(time)) return Infinity
-
   let [h, m] = time.split(':').map(Number)
-  if (Number.isNaN(h) || Number.isNaN(m)) return Infinity
   if (h < 0 || h > 23 || m < 0 || m > 59) return Infinity
-
-  // 小于 6 点归到次日
   if (h < 6) h += 24
   return h * 60 + m
 }
 
-/**
- * 业务分钟转回 "HH:MM"
- * 允许输出 24:xx / 25:xx（更符合影院排片与后端扩展小时制）
- */
 const minutesToTime = (minutes) => {
-  if (typeof minutes !== 'number' || Number.isNaN(minutes) || minutes === Infinity) return '--:--'
-  const h = Math.floor(minutes / 60)
-  const m = minutes % 60
+  if (!Number.isFinite(minutes)) return '--:--'
+  const normalized = minutes % (24 * 60)
+  const h = Math.floor(normalized / 60)
+  const m = normalized % 60
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-/**
- * 计算下一个推荐开始时间：取当前列表中「业务时间最晚」的一场
- */
+/* ================== 超级营业时间锁 ================== */
+/** 07:00 ～ 次日 05:30 */
+const isStartTimeAllowed = (time) => {
+  const m = toBusinessMinutes(time)
+  if (!Number.isFinite(m)) return false
+  const OPEN = 7 * 60
+  const CLOSE = 24 * 60 + 5 * 60 + 30
+  return m >= OPEN && m <= CLOSE
+}
+
+/* ================== 计算下一场时间 ================== */
 const calcNextStartTime = () => {
   const list = currentSchedule.value
   if (!list.length) return '10:00'
 
-  // ✅ 确保按业务时间取最后一场（即使列表被外部改乱也不怕）
   const last = [...list]
     .sort((a, b) => toBusinessMinutes(a.startTime) - toBusinessMinutes(b.startTime))
     .at(-1)
 
-  const start = toBusinessMinutes(last?.startTime)
-  if (!Number.isFinite(start) || !last?.duration) return '10:00'
+  if (!last) return '10:00'
 
-  return minutesToTime(start + last.duration + Number(emptyInterval.value || 0))
+  const start = toBusinessMinutes(last.startTime)
+  if (!Number.isFinite(start)) return '10:00'
+
+  return minutesToTime(start + Number(last.duration || 0) + Number(emptyInterval.value || 0))
 }
 
-// 计算有效日期
+/* ================== 日期权限 ================== */
 const canEditSchedule = (dateStr) => {
   const today = dayjs().startOf('day')
   const d = dayjs(dateStr).startOf('day')
   return !d.isBefore(today) && !d.isAfter(today.add(3, 'day'))
 }
 
-/* ========= API ========= */
+/* ================== API ================== */
 const submitSingleSchedule = async (item) => {
   if (!canEditSchedule(Show_date.value)) {
     ElMessage.error('当前日期不允许排期')
     return
   }
-
   const hall = hallList.value.find((h) => h.id === currentHallId.value)
   if (!hall) return
   await DataApi.AddMovies(item.movieName, hall.val, item.startTime, Show_date.value)
@@ -103,12 +101,12 @@ const submitSingleSchedule = async (item) => {
 
 const getSchedule = async () => {
   try {
-    const hall_num = hallList.value.find((h) => h.id === currentHallId.value)
-    if (!hall_num) return
+    const hall = hallList.value.find((h) => h.id === currentHallId.value)
+    if (!hall) return
 
-    const res = await DataApi.GetMoviesList(hall_num.val, Show_date.value)
+    const res = await DataApi.GetMoviesList(hall.val, Show_date.value)
 
-    const normalized = (res?.data?.data || [])
+    allSchedule.value[hall.id] = (res?.data?.data || [])
       .map((row) => {
         const movie = movieList.value.find((m) => m.name === row.movie_name)
         return {
@@ -119,27 +117,26 @@ const getSchedule = async () => {
           startTime: row.start_time || '--:--',
         }
       })
-      // ✅ 核心：按「影院业务分钟」排序（06:00 → 次日）
       .sort((a, b) => toBusinessMinutes(a.startTime) - toBusinessMinutes(b.startTime))
-
-    allSchedule.value[hall_num.id] = normalized
   } catch {
     allSchedule.value[currentHallId.value] = []
   }
 }
 
-/* ========= 拖拽逻辑 ========= */
+const selectHall = (id) => {
+  currentHallId.value = id
+  getSchedule()
+}
+/* ================== 拖拽新增 ================== */
 const handleMovieDrag = async (movieId) => {
-  if (!movieId) return
-
   const movie = movieList.value.find((m) => m.id === movieId)
-  if (!movie) {
-    ElMessage.warning('影片数据丢失')
-    return
-  }
+  if (!movie) return ElMessage.warning('影片数据丢失')
+  if (!canEditSchedule(Show_date.value)) return ElMessage.error('当前日期不允许排期')
 
-  if (!canEditSchedule(Show_date.value)) {
-    ElMessage.error('当前日期不允许排期')
+  const startTime = calcNextStartTime()
+
+  if (!isStartTimeAllowed(startTime)) {
+    ElMessage.error('开场时间超出营业范围（07:00 ~ 次日 05:30）')
     return
   }
 
@@ -148,13 +145,12 @@ const handleMovieDrag = async (movieId) => {
     movieId: movie.id,
     movieName: movie.name,
     duration: movie.duration,
-    startTime: calcNextStartTime(), // ✅ 基于业务时间轴计算
+    startTime,
   }
 
   const list = allSchedule.value[currentHallId.value] || []
   list.push(newItem)
 
-  // ✅ push 后立刻按业务分钟重排（避免乱序导致 interval/end 异常）
   allSchedule.value[currentHallId.value] = list.sort(
     (a, b) => toBusinessMinutes(a.startTime) - toBusinessMinutes(b.startTime),
   )
@@ -164,9 +160,9 @@ const handleMovieDrag = async (movieId) => {
   await getSchedule()
 }
 
+/* ================== 拖拽初始化 ================== */
 const initScheduleDrop = () => {
   if (!scheduleDropRef.value) return
-
   new Sortable(scheduleDropRef.value, {
     group: { name: 'movie', pull: false, put: true },
     sort: false,
@@ -179,16 +175,20 @@ const initScheduleDrop = () => {
   })
 }
 
-/* ========= 子组件回调 ========= */
-const onItemUpdated = () => getSchedule()
-const onItemDeleted = () => getSchedule()
+/* ================== ✅ 子组件事件（修复缺失） ================== */
+const onItemUpdated = async () => {
+  await getSchedule()
+}
 
-const currentMovieCount = computed(() => currentSchedule.value.length)
+const onItemDeleted = async () => {
+  await getSchedule()
+}
 
-/* ========= 生命周期 ========= */
+/* ================== 生命周期 ================== */
 onMounted(async () => {
-  const hallConfig = await ConfigApi.getSystemValue('hall_num')
-  const hallNum = Number(hallConfig?.data?.data?.setting_value || 1)
+  const hallNum = Number(
+    (await ConfigApi.getSystemValue('hall_num'))?.data?.data?.setting_value || 1,
+  )
 
   hallList.value = Array.from({ length: hallNum }, (_, i) => ({
     id: `hall_${i + 1}`,
@@ -197,10 +197,7 @@ onMounted(async () => {
   }))
 
   currentHallId.value = hallList.value[0].id
-
-  hallList.value.forEach((h) => {
-    allSchedule.value[h.id] = []
-  })
+  hallList.value.forEach((h) => (allSchedule.value[h.id] = []))
 
   const movieRes = await DataApi.GetMoviesInfo('get')
   movieList.value = (movieRes?.data?.data || []).map((m) => ({
@@ -223,26 +220,37 @@ onMounted(async () => {
 
     <div class="schedule-content">
       <div class="schedule-toolbar">
-        <p>影厅：</p>
-        <ElSelect v-model="currentHallId" @change="getSchedule" size="small" style="width: 80px">
-          <ElOption v-for="h in hallList" :key="h.id" :label="h.name" :value="h.id" />
-        </ElSelect>
-        <div>已排 {{ currentMovieCount }} 场</div>
-        <p>每场空隙：</p>
-        <ElInputNumber v-model="emptyInterval" :min="0" :max="60" />
-        日期：
-        <el-date-picker
-          v-model="Show_date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          format="YYYY-MM-DD"
-          :editable="false"
-          :clearable="false"
-          :disabled-date="disabledDate"
-          placeholder="选择日期"
-          style="width: 120px"
-          @change="getSchedule"
-        />
+        <div>
+          <p>影厅：</p>
+          <div class="hall_list">
+            <div
+              v-for="h in hallList"
+              :key="h.id"
+              @click="selectHall(h.id)"
+              :class="{ active: currentHallId === h.id }"
+            >
+              {{ h.name }}
+            </div>
+          </div>
+        </div>
+        <div>
+          <div>已排 {{ currentMovieCount }} 场</div>
+          <p>每场空隙：</p>
+          <ElInputNumber v-model="emptyInterval" :min="0" :max="60" />
+          日期：
+          <el-date-picker
+            v-model="Show_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            format="YYYY-MM-DD"
+            :editable="false"
+            :clearable="false"
+            :disabled-date="disabledDate"
+            placeholder="选择日期"
+            style="width: 120px"
+            @change="getSchedule"
+          />
+        </div>
       </div>
       <div ref="scheduleDropRef" class="schedule-list-container">
         <ElRow class="schedule-header">
@@ -271,7 +279,6 @@ onMounted(async () => {
     </div>
   </div>
 </template>
-
 <style scoped>
 /* 全局页面布局 - 统一深色风格 */
 .cinema-schedule-page {
@@ -301,50 +308,81 @@ onMounted(async () => {
   background: #111827;
   border-radius: 8px;
   border: 1px solid #1f2937;
+  flex-wrap: wrap;
 }
 
-/* 影厅选择器样式 */
-.hall-selector {
-  width: 180px;
+/* ========== 核心：影厅横向列表样式 ========== */
+.hall_list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: 8px;
 }
 
-/* 空场间隔设置样式 */
-.interval-setting {
+/* 单个影厅选项样式 */
+.hall_list > div {
+  padding: 6px 16px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #e5e7eb;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+/* 选中状态 */
+.hall_list > div.active {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+/* 悬停效果（非选中状态） */
+.hall_list > div:hover:not(.active) {
+  border-color: #38bdf8;
+  color: #f5e7c1;
+  background: #273043;
+}
+
+/* 影厅标签样式 */
+.schedule-toolbar > div:first-child {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.interval-setting .label {
-  color: #94a3b8;
-  font-size: 14px;
-}
-.interval-input {
-  width: 80px;
-}
-.interval-setting .unit {
+
+.schedule-toolbar > div:first-child > p {
+  margin: 0;
   color: #94a3b8;
   font-size: 14px;
 }
 
-/* 排期数量统计样式 */
-.count-stat {
+/* 工具栏右侧内容布局 */
+.schedule-toolbar > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* 已排场次统计 */
+.schedule-toolbar > div:last-child > div:first-child {
   color: #e5e7eb;
   font-size: 14px;
-}
-.count-num {
-  color: #38bdf8;
-  font-weight: 600;
-  padding: 2px 6px;
-  background: rgba(56, 189, 248, 0.1);
+  background: rgba(75, 85, 99, 0.2);
+  padding: 4px 12px;
   border-radius: 4px;
-  margin: 0 4px;
 }
 
-/* 影厅标题样式 */
-.hall-title {
-  color: #38bdf8;
-  font-weight: 600;
-  font-size: 16px;
+/* 空隙设置样式 */
+.schedule-toolbar > div:last-child > p {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 14px;
 }
 
 /* 排期列表容器 */
@@ -403,42 +441,48 @@ onMounted(async () => {
 }
 
 /* ElementUI组件样式穿透 - 统一深色风格 */
-:deep(.el-select .el-input__wrapper) {
+:deep(.el-input-number__wrapper) {
+  background: #1f2937;
+  border: 1px solid #374151;
+  color: #e5e7eb;
+  width: 80px;
+}
+:deep(.el-input-number__wrapper:hover) {
+  border-color: #38bdf8;
+}
+
+:deep(.el-date-picker .el-input__wrapper) {
   background: #1f2937;
   border: 1px solid #374151;
   color: #e5e7eb;
   box-shadow: none;
 }
-:deep(.el-select .el-input__wrapper:hover) {
+:deep(.el-date-picker .el-input__wrapper:hover) {
   border-color: #38bdf8;
 }
-:deep(.el-select-dropdown) {
+
+:deep(.el-popper) {
   background: #1f2937;
   border: 1px solid #374151;
 }
-:deep(.el-select-dropdown__item) {
+:deep(.el-date-table) {
   color: #e5e7eb;
 }
-:deep(.el-select-dropdown__item:hover) {
+:deep(.el-date-table td:hover) {
   background: #374151;
 }
-:deep(.el-select-dropdown__item.selected) {
+:deep(.el-date-table .el-date-table__row.current) {
   color: #38bdf8;
-  background: rgba(56, 189, 248, 0.1);
 }
-:deep(.el-input-number__wrapper) {
-  background: #1f2937;
-  border: 1px solid #374151;
-  color: #e5e7eb;
+:deep(.el-date-table .el-date-table__row.today) {
+  color: #0ea5e9;
 }
-:deep(.el-input-number__wrapper:hover) {
-  border-color: #38bdf8;
-}
-:deep(.el-divider) {
-  background-color: #1f2937;
-}
-:deep(.el-divider__text) {
-  color: #94a3b8;
+
+/* 列文字颜色统一 */
+.el-col {
+  color: #f5e7c1; /* 统一浅麦色 */
+  font-size: 14px;
+  text-align: center;
 }
 
 /* 响应式适配 - 移动端友好 */
@@ -449,17 +493,22 @@ onMounted(async () => {
     gap: 16px;
   }
   .schedule-toolbar {
-    flex-wrap: wrap;
     gap: 12px;
+  }
+  .hall_list {
+    width: 100%;
+    margin-left: 0;
+    margin-top: 8px;
+  }
+  .schedule-toolbar > div:first-child {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
   }
   .schedule-list-container {
     padding: 16px;
+    height: calc(100vh - 350px);
   }
-}
-
-/* 列文字颜色统一 */
-.el-col {
-  color: #f5e7c1; /* 统一浅麦色 */
-  font-size: 14px;
 }
 </style>

@@ -27,7 +27,7 @@ const CagMovies = (id, data) => {
 // 获取电影信息
 const GetMoviesInfo = (name, status) => {
   return request.get('/movie/getInfo?movie_name=' + name + '&status=' + status)
-} // 获取电影信息
+} // 删除电影信息
 const DelMoviesInfo = (id) => {
   const params = new URLSearchParams()
   params.append('movie_id', id)

@@ -23,9 +23,19 @@ const RouterMap = [
         component: () => import('@/views/admin/ScheduleBoard.vue'),
       },
       {
+        path: 'list',
+        name: 'list',
+        component: () => import('@/views/admin/ScheduleList.vue'),
+      },
+      {
         path: 'manage',
         name: 'admin-schedule',
         component: () => import('@/views/admin/ScheduleManage.vue'),
+      },
+      {
+        path: 'manageh5',
+        name: 'admin-schedule-h5',
+        component: () => import('@/views/admin/ScheduleManage-h5.vue'),
       },
       {
         path: 'import',

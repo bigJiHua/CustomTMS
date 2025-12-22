@@ -1,12 +1,12 @@
 <script setup>
 import { ref, reactive, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import * as XLSX from 'xlsx'
 import dayjs from 'dayjs'
 import GetDataFunc from '@/utils/API/Data'
 import DataApi from '@/utils/API/Data'
 // 引入Element Plus的图标
-import { Check, Warning } from '@element-plus/icons-vue'
+import { Check, Warning, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 
 /* ================== 系统配置 ================== */
 const SYSTEM_HALL_COUNT = 11
@@ -46,6 +46,16 @@ const detectResult = reactive({
 
 // 优化movieCheckResult结构：存储{exist: boolean, duration: number}
 const movieCheckResult = ref({})
+
+/* ================== 批量提交相关状态 ================== */
+// 批量提交弹窗显示状态
+const showBatchSubmitDialog = ref(false)
+// 待提交的列表（深拷贝过滤后的数据）
+const batchSubmitList = ref([])
+// 批量提交状态：{ rowIndex: { success: boolean, loading: boolean } }
+const batchSubmitStatus = ref({})
+// 批量提交是否正在进行中
+const isBatchSubmitting = ref(false)
 
 /* ================== Excel 时间解析 ================== */
 /**
@@ -220,8 +230,6 @@ const filterScheduleData = () => {
 const checkMovieExist = async (movieName) => {
   try {
     const { data: res } = await GetDataFunc.GetMoviesInfo(movieName, 1)
-    console.log('影片校验结果：', res)
-
     // 根据status判断影片是否存在
     if (res.status === 200) {
       // 200表示存在，存储状态和时长（duration_seconds转分钟）
@@ -399,17 +407,138 @@ const submitRow = async (item) => {
     start_time: item.data.start_time,
   }
 
-  await DataApi.AddMovies(
-    submitData.movie_name,
-    submitData.hall_name,
-    submitData.start_time,
-    submitData.show_date,
-  )
-  // TODO: 对接你的提交API
-  // console.log('【提交排期】', submitData)
-  // ElMessage.success(
-  //   `已提交：${submitData.movie_name} ${submitData.hall_name}号厅 ${submitData.start_time}`,
-  // )
+  try {
+    await DataApi.AddMovies(
+      submitData.movie_name,
+      submitData.hall_name,
+      submitData.start_time,
+      submitData.show_date,
+    )
+    ElMessage.success(
+      `已提交：${submitData.movie_name} ${submitData.hall_name}号厅 ${submitData.start_time}`,
+    )
+  } catch (err) {
+    console.error('单行提交失败：', err)
+    ElMessage.error(`提交失败：${err.message || '网络异常'}`)
+  }
+}
+
+/* ================== 批量提交功能 ================== */
+/**
+ * 打开批量提交弹窗
+ */
+const openBatchSubmitDialog = () => {
+  // 1. 过滤出可提交的有效数据
+  const validSubmitList = filteredData.value.filter((item) => {
+    // 基础校验通过 + 无重复 + 影片存在
+    return (
+      item.basicValid &&
+      !item.isDuplicate &&
+      movieCheckResult.value[item.data.movie_name]?.exist === true
+    )
+  })
+
+  if (validSubmitList.length === 0) {
+    ElMessage.warning('暂无可提交的有效排期数据（请检查数据校验状态）')
+    return
+  }
+
+  // 2. 深拷贝数据，避免修改原列表
+  batchSubmitList.value = JSON.parse(JSON.stringify(validSubmitList))
+  // 3. 重置提交状态
+  batchSubmitStatus.value = {}
+  batchSubmitList.value.forEach((_, index) => {
+    batchSubmitStatus.value[index] = {
+      success: null, // null: 未提交, true: 成功, false: 失败
+      loading: false, // 是否正在提交
+    }
+  })
+  // 4. 打开弹窗
+  showBatchSubmitDialog.value = true
+}
+
+/**
+ * 执行批量提交
+ */
+const executeBatchSubmit = async () => {
+  if (isBatchSubmitting.value) return
+  isBatchSubmitting.value = true
+
+  // 遍历待提交列表，间隔500ms调用API
+  for (let i = 0; i < batchSubmitList.value.length; i++) {
+    const item = batchSubmitList.value[i]
+    // 更新当前行加载状态
+    batchSubmitStatus.value[i].loading = true
+
+    // 组装提交数据
+    const submitData = {
+      show_date: show_date.value,
+      movie_name: item.data.movie_name,
+      hall_name: Number(item.data.hall_name),
+      start_time: item.data.start_time,
+    }
+
+    try {
+      // 调用提交API
+      await DataApi.AddMovies(
+        submitData.movie_name,
+        submitData.hall_name,
+        submitData.start_time,
+        submitData.show_date,
+      )
+      // 提交成功
+      batchSubmitStatus.value[i].success = true
+      batchSubmitStatus.value[i].loading = false
+    } catch (err) {
+      // 提交失败
+      console.error(`批量提交第${i + 1}条数据失败：`, err)
+      batchSubmitStatus.value[i].success = false
+      batchSubmitStatus.value[i].loading = false
+    }
+
+    // 最后一条数据不需要等待
+    if (i < batchSubmitList.value.length - 1) {
+      // 间隔500ms
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+
+  // 全部提交完成，更新状态（弹窗不关闭）
+  isBatchSubmitting.value = false
+
+  // 统计成功/失败数量
+  const successCount = Object.values(batchSubmitStatus.value).filter(
+    (item) => item.success === true,
+  ).length
+  const failCount = Object.values(batchSubmitStatus.value).filter(
+    (item) => item.success === false,
+  ).length
+
+  ElNotification({
+    title: '批量提交完成',
+    message: `共提交${batchSubmitList.value.length}条数据，成功${successCount}条，失败${failCount}条`,
+    type: failCount > 0 ? 'warning' : 'success',
+    duration: 5000,
+  })
+}
+
+/**
+ * 确认批量提交
+ */
+const confirmBatchSubmit = () => {
+  ElMessageBox.confirm('请确认是否添加以下排期数据', '批量提交确认', {
+    confirmButtonText: '确认提交',
+    cancelButtonText: '取消',
+    type: 'warning',
+    draggable: true,
+  })
+    .then(async () => {
+      await executeBatchSubmit()
+    })
+    .catch(() => {
+      // 取消提交，仅关闭确认弹窗，批量提交弹窗不关闭
+      ElMessage.info('已取消批量提交')
+    })
 }
 
 /* ================== 文件事件 ================== */
@@ -443,6 +572,11 @@ const onFileRemove = () => {
   movieCheckResult.value = {}
   filterForm.hallName = ''
   filterForm.movieName = ''
+  // 重置批量提交状态
+  showBatchSubmitDialog.value = false
+  batchSubmitList.value = []
+  batchSubmitStatus.value = {}
+  isBatchSubmitting.value = false
 }
 
 /* ================== 监听筛选 ================== */
@@ -595,6 +729,17 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
               >重置筛选</el-button
             >
           </el-form-item>
+
+          <!-- 新增：一键提交按钮 -->
+          <el-form-item>
+            <el-button
+              type="primary"
+              @click="openBatchSubmitDialog"
+              :disabled="isParsing || filteredData.length === 0"
+            >
+              一键提交
+            </el-button>
+          </el-form-item>
         </el-form>
       </div>
 
@@ -669,8 +814,87 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
         暂无有效排期数据
       </div>
     </el-card>
+
+    <!-- 批量提交弹窗 -->
+    <el-dialog
+      v-model="showBatchSubmitDialog"
+      title="批量提交排期确认"
+      width="800px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :before-close="() => !isBatchSubmitting.value"
+    >
+      <div class="batch-submit-content">
+        <div class="batch-submit-tip">
+          请确认是否添加以下排期至 <span class="hall-text">{{ filterForm.hallName || '指定' }}</span
+          >号厅 日期：<span class="date-text">{{ dayjs(show_date).format('YYYY年MM月DD日') }}</span>
+        </div>
+
+        <!-- 批量提交列表 -->
+        <div class="batch-submit-list">
+          <el-table
+            :data="batchSubmitList"
+            border
+            stripe
+            style="width: 100%; color: #6495ed; background-color: black"
+            height="400px"
+          >
+            <el-table-column label="影厅" prop="data.hall_name" width="80">
+              <template #default="scope"> {{ scope.row.data.hall_name }}号厅 </template>
+            </el-table-column>
+            <el-table-column label="影片" prop="data.movie_name" min-width="200" />
+            <el-table-column label="放映时间" prop="data.start_time" width="120" />
+            <el-table-column label="提交状态" width="120">
+              <template #default="scope">
+                <el-space>
+                  <!-- 加载中 -->
+                  <el-skeleton
+                    circle
+                    variant="text"
+                    width="20px"
+                    height="20px"
+                    v-if="batchSubmitStatus[scope.$index].loading"
+                  />
+                  <!-- 成功 -->
+                  <el-icon
+                    color="#4CAF50"
+                    v-else-if="batchSubmitStatus[scope.$index].success === true"
+                  >
+                    <CircleCheck />
+                  </el-icon>
+                  <!-- 失败 -->
+                  <el-icon
+                    color="#F44336"
+                    v-else-if="batchSubmitStatus[scope.$index].success === false"
+                  >
+                    <CircleClose />
+                  </el-icon>
+                  <!-- 未提交 -->
+                  <span v-else class="pending-text">待提交</span>
+                </el-space>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showBatchSubmitDialog = false" :disabled="isBatchSubmitting.value">
+          关闭
+        </el-button>
+        <el-button
+          type="primary"
+          @click="confirmBatchSubmit"
+          :loading="isBatchSubmitting.value"
+          :disabled="isBatchSubmitting.value"
+        >
+          确认提交
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
+
 <style scoped>
 /* 黑色主题基础样式 */
 .page {
@@ -984,5 +1208,65 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
   background-color: #333;
   border-color: #444;
   color: white;
+}
+
+/* 批量提交弹窗样式 */
+.batch-submit-content {
+  color: #e0e0e0;
+}
+
+.batch-submit-tip {
+  font-size: 14px;
+  margin-bottom: 16px;
+  padding: 8px;
+  background-color: #252525;
+  border-radius: 4px;
+}
+
+.hall-text,
+.date-text {
+  color: #64b5f6;
+  font-weight: 600;
+}
+
+.batch-submit-list :deep(.el-table) {
+  --el-table-header-text-color: #e0e0e0;
+  --el-table-row-hover-bg-color: #2a2a2a;
+  --el-table-row-stripe-bg-color: #222;
+  --el-table-text-color: #e0e0e0;
+  background-color: #1e1e1e;
+  color: #e0e0e0;
+}
+
+.batch-submit-list :deep(.el-table th) {
+  background-color: #252525;
+  border-bottom: 1px solid #444;
+}
+
+.batch-submit-list :deep(.el-table td) {
+  border-bottom: 1px solid #333;
+}
+
+.pending-text {
+  color: #999;
+  font-size: 14px;
+}
+
+/* 弹窗样式适配 */
+:deep(.el-dialog) {
+  background-color: #1e1e1e;
+  border: 1px solid #333;
+}
+
+:deep(.el-dialog__header) {
+  border-bottom: 1px solid #333;
+}
+
+:deep(.el-dialog__title) {
+  color: #e0e0e0;
+}
+
+:deep(.el-dialog__footer) {
+  border-top: 1px solid #333;
 }
 </style>
