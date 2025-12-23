@@ -69,6 +69,100 @@ const SCROLL_DEBOUNCE = 0 // 取消防抖，立即同步（关键优化跟手性
 let scrollTimeout = null
 
 /* =========================
+   核心：影院业务日工具函数（从第二个组件整合）
+========================= */
+/**
+ * 将 "HH:MM" 转成「影院业务分钟」
+ * 规则：当日06:00 ~ 次日05:30 属于今日业务日
+ * @param time 时间字符串 HH:MM
+ * @param baseDate 基准自然日期（YYYY-MM-DD）
+ * @returns 业务分钟数
+ */
+const toBusinessMinutes = (time, baseDate) => {
+  if (!time || !baseDate) return Infinity
+  const [h, m] = time.split(':').map(Number)
+
+  // 基础时间：基准日期的 06:00
+  const baseTime = dayjs(`${baseDate} 06:00:00`).valueOf()
+  // 当前时间：基准日期的 HH:MM
+  let currentTime = dayjs(
+    `${baseDate} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`,
+  ).valueOf()
+
+  // 如果是 00:00~05:59，视为基准日期的次日
+  if (h < 6) {
+    currentTime = dayjs(currentTime).add(1, 'day').valueOf()
+  }
+
+  // 计算与 06:00 的差值（分钟）
+  const diffMinutes = Math.floor((currentTime - baseTime) / 60000)
+  return diffMinutes
+}
+
+/**
+ * 获取排期的实际时间戳
+ */
+const getScheduleTimes = (schedule) => {
+  const source = sourcesRaw.value.find((s) => s.movie_source_id === schedule.movie_source_id)
+  const durationSeconds = source?.duration_seconds || 0
+
+  // 解析开始时间
+  const rawStartTime = schedule.start_time || '00:00'
+  let actualStartTimeStr = `${Show_date.value} ${rawStartTime}`
+  const [h] = rawStartTime.split(':').map(Number)
+
+  // 如果是 00:00~05:59，视为次日
+  let actualStartTime = dayjs(actualStartTimeStr)
+  if (h < 6) {
+    actualStartTime = actualStartTime.add(1, 'day')
+  }
+
+  const endTime = actualStartTime.add(durationSeconds, 'second')
+
+  return {
+    start: actualStartTime.valueOf(),
+    end: endTime.valueOf(),
+    duration: Math.floor(durationSeconds / 60),
+  }
+}
+
+/**
+ * 计算排期的播放进度
+ */
+const getScheduleProgress = (schedule) => {
+  const times = getScheduleTimes(schedule)
+  if (!times || times.start === Infinity) return 0
+
+  const currentTime = now.value
+
+  // 未开始
+  if (currentTime < times.start) return 0
+  // 已结束
+  if (currentTime >= times.end) return 100
+
+  // 播放中，计算进度
+  const totalDuration = times.end - times.start
+  const elapsed = currentTime - times.start
+  const progress = Math.floor((elapsed / totalDuration) * 100)
+
+  return Math.min(progress, 100)
+}
+
+/**
+ * 判断排期状态
+ */
+const getScheduleStatus = (schedule) => {
+  const times = getScheduleTimes(schedule)
+  if (!times) return 'invalid'
+
+  const currentTime = now.value
+
+  if (currentTime < times.start) return 'pending'
+  if (currentTime >= times.end) return 'finished'
+  return 'playing'
+}
+
+/* =========================
    计算属性
 ========================= */
 // 动态时间轴宽度（从起始点到5:30）
@@ -82,7 +176,7 @@ const endTime = computed(() =>
     : '--:--',
 )
 
-// 排期数据加工
+// 排期数据加工（整合进度计算）
 const processedSchedules = computed(() =>
   schedulesRaw.value.map((s) => {
     const src = sourcesRaw.value.find((x) => x.movie_source_id === s.movie_source_id)
@@ -91,13 +185,10 @@ const processedSchedules = computed(() =>
     const startBizMin = toBizMin(s.start_time)
     const endBizMin = startBizMin + duration
 
-    const startTs = toActualStartTs(s.show_date, s.start_time)
-    const endTs = dayjs(startTs).add(duration, 'minute').valueOf()
-
-    let status = 'invalid'
-    if (now.value < startTs) status = 'pending'
-    else if (now.value >= endTs) status = 'finished'
-    else status = 'playing'
+    // 使用整合的时间计算函数
+    const times = getScheduleTimes(s)
+    const status = getScheduleStatus(s)
+    const progress = getScheduleProgress(s)
 
     return {
       id: s.id,
@@ -110,6 +201,9 @@ const processedSchedules = computed(() =>
       startBizMin,
       endBizMin,
       status,
+      progress, // 新增：播放进度
+      actualStart: times.start,
+      actualEnd: times.end,
     }
   }),
 )
@@ -124,13 +218,22 @@ const ticks = computed(() => {
   return arr
 })
 
-// 当前时间线（适配动态起始点）
+// 当前时间线（适配动态起始点，精准对齐）
 const nowX = computed(() => {
   const t = dayjs()
   let min = t.hour() * 60 + t.minute()
   if (t.hour() < 6) min += 1440
+
+  // 使用业务分钟计算，保证精准对齐
+  const businessMin = toBusinessMinutes(t.format('HH:mm'), Show_date.value) + 360 // 补偿06:00的基准偏移
   // 计算相对于动态起始点的X坐标
-  return (min - timelineStartMin.value) * pxPerMin.value
+  return (businessMin - timelineStartMin.value) * pxPerMin.value
+})
+
+// 已过去时间的遮罩宽度
+const maskWidth = computed(() => {
+  // 确保遮罩不超过时间轴范围
+  return Math.max(0, Math.min(nowX.value, timelineWidth.value))
 })
 
 // 缩放按钮状态
@@ -546,7 +649,7 @@ onMounted(async () => {
   // 加载数据
   await fetchData()
 
-  // 定时器更新当前时间
+  // 定时器更新当前时间（每秒更新，保证进度条实时性）
   timer = setInterval(() => (now.value = Date.now()), 1000)
 
   // 绑定滚动和缩放事件
@@ -680,6 +783,9 @@ watch(pxPerMin, () => {
           <div class="timeline-canvas" :style="{ width: canvasWidth + 'px' }">
             <!-- 时间刻度头部 -->
             <div class="time-header">
+              <!-- 已过去时间的遮罩层 -->
+              <div class="time-mask" :style="{ width: maskWidth + 'px' }"></div>
+
               <div
                 v-for="t in ticks"
                 :key="t.min"
@@ -689,12 +795,19 @@ watch(pxPerMin, () => {
               >
                 {{ t.label }}
               </div>
-              <div class="now-line" :style="{ left: nowX + 'px' }" />
+
+              <!-- 当前时间线（贯穿整个列表） -->
+              <div class="now-line" :style="{ left: nowX + 'px' }">
+                <div class="now-label">{{ dayjs().format('HH:mm:ss') }}</div>
+              </div>
             </div>
 
             <!-- 影厅排期行 -->
             <div v-for="h in halls" :key="h.id" class="lane">
               <div class="lane-body" :style="{ width: timelineWidth + 'px' }">
+                <!-- 每行的已过去时间遮罩 -->
+                <div class="lane-mask" :style="{ width: maskWidth + 'px' }"></div>
+
                 <div
                   v-for="s in processedSchedules.filter((i) => i.hallId === h.id)"
                   :key="s.id"
@@ -710,7 +823,26 @@ watch(pxPerMin, () => {
                   <div v-if="(s.endBizMin - s.startBizMin) * pxPerMin > 90" class="time-range">
                     {{ s.startTime }} - {{ bizMinToTime(s.endBizMin) }}
                   </div>
+
+                  <!-- 播放进度条 -->
+                  <div class="schedule-progress-container">
+                    <div
+                      class="schedule-progress-bar"
+                      :style="{ width: `${s.progress}%` }"
+                      :class="{
+                        pending: s.status === 'pending',
+                        playing: s.status === 'playing',
+                        finished: s.status === 'finished',
+                      }"
+                    ></div>
+                  </div>
+
+                  <!-- 进度百分比显示 -->
+                  <div class="progress-text" v-if="s.status === 'playing'">{{ s.progress }}%</div>
                 </div>
+
+                <!-- 每行的当前时间线 -->
+                <div class="lane-now-line" :style="{ left: nowX + 'px' }"></div>
               </div>
             </div>
           </div>
@@ -923,7 +1055,7 @@ watch(pxPerMin, () => {
   width: 120px;
   flex-shrink: 0;
   border-right: 1px solid rgba(148, 163, 184, 0.15);
-  height: 85%;
+  height: 80%;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
@@ -962,7 +1094,7 @@ watch(pxPerMin, () => {
 .scrollable-timeline {
   flex: 1;
   overflow: auto;
-  height: 85%;
+  height: 80%;
   scrollbar-width: thin;
   scrollbar-color: #3b82f6 #1e293b;
   transform: translateZ(0);
@@ -1013,6 +1145,18 @@ watch(pxPerMin, () => {
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
   width: 100%;
   transform: translateZ(0);
+  position: relative;
+}
+
+/* 已过去时间的遮罩层 */
+.time-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 5;
+  pointer-events: none;
 }
 
 .tick {
@@ -1021,6 +1165,7 @@ watch(pxPerMin, () => {
   font-size: 11px;
   opacity: 0.6;
   transform: translateX(-50%);
+  z-index: 8;
 }
 
 .tick.major {
@@ -1028,15 +1173,27 @@ watch(pxPerMin, () => {
   font-weight: 600;
 }
 
+/* 当前时间线（贯穿整个列表）- 优化样式 */
 .now-line {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 2px;
   background: linear-gradient(180deg, #22c55e, transparent);
-  transform: translateX(-50%);
   box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
   z-index: 11;
+  transform: translateX(-50%);
+}
+.now-line .now-label {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  font-size: 10px;
+  background: #e87d13;
+  color: white;
+  padding: 2px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
 }
 
 /* ================== 泳道 ================== */
@@ -1052,6 +1209,29 @@ watch(pxPerMin, () => {
   position: relative;
   width: 100%;
   height: 100%;
+}
+
+/* 每行的已过去时间遮罩 */
+.lane-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.2);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* 每行的当前时间线 */
+.lane-now-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #22c55e;
+  z-index: 4;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 /* ================== 排期块 ================== */
@@ -1074,6 +1254,8 @@ watch(pxPerMin, () => {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  z-index: 2;
+  overflow: hidden;
 }
 
 .schedule-block.playing {
@@ -1087,6 +1269,7 @@ watch(pxPerMin, () => {
 .schedule-block:hover {
   transform: translateY(-2px) translateZ(0);
   box-shadow: 0 15px 40px rgba(59, 130, 246, 0.4);
+  z-index: 3;
 }
 
 .movie-title {
@@ -1097,12 +1280,60 @@ watch(pxPerMin, () => {
   text-overflow: ellipsis;
   margin-bottom: 4px;
   line-height: 1.4;
+  position: relative;
+  z-index: 1;
 }
 
 .time-range {
   font-size: 12px;
   opacity: 0.9;
   line-height: 1.3;
+  position: relative;
+  z-index: 1;
+}
+
+/* 播放进度条样式 */
+.schedule-progress-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+}
+
+.schedule-progress-bar {
+  height: 100%;
+  transition: width 0.5s ease;
+}
+
+.schedule-progress-bar.pending {
+  background: #3b82f6;
+  width: 0% !important;
+}
+
+.schedule-progress-bar.playing {
+  background: #e87d13;
+}
+
+.schedule-progress-bar.finished {
+  background: #ef4444;
+  width: 100% !important;
+}
+
+/* 进度百分比文本 */
+.progress-text {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 10px;
+  color: white;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  z-index: 1;
 }
 
 /* ================== 弹窗样式 ================== */

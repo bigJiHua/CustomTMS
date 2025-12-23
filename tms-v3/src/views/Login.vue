@@ -161,7 +161,6 @@ const onReg = () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
   background-color: rgb(111, 115, 120);
   color: white;
 }
