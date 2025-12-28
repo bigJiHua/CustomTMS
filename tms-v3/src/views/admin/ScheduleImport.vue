@@ -33,6 +33,10 @@ const rawExcelData = ref([])
 const validHallData = ref([])
 const filteredData = ref([])
 
+/* ================== 文本粘贴导入（新增） ================== */
+const pasteText = ref('')
+const pasteStatus = ref('')
+
 /* ================== 筛选 / 校验状态 ================== */
 const filterForm = reactive({
   hallName: '',
@@ -75,6 +79,92 @@ const parseExcelTime = (value) => {
   }
 
   return String(value).trim()
+}
+
+/* ================== 文本粘贴解析（新增） ================== */
+/**
+ * 解析粘贴的排期文本
+ * 支持格式：2025-12-28|阿凡达3|7|13:35|16:53
+ */
+const parsePasteText = () => {
+  if (!pasteText.value.trim()) {
+    ElMessage.warning('请输入排期文本')
+    return
+  }
+
+  isParsing.value = true
+  parseError.value = ''
+  fileStatus.value = '解析中（文本）...'
+
+  try {
+    // 清空原有文件和数据
+    file.value = null
+    rawExcelData.value = []
+    validHallData.value = []
+    filteredData.value = []
+    detectResult.halls = []
+    detectResult.movies = []
+    movieCheckResult.value = {}
+    filterForm.hallName = ''
+    filterForm.movieName = ''
+    showBatchSubmitDialog.value = false
+    batchSubmitList.value = []
+    batchSubmitStatus.value = {}
+    isBatchSubmitting.value = false
+
+    // 解析文本
+    const lines = pasteText.value
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+
+    if (!lines.length) {
+      throw new Error('文本为空')
+    }
+
+    const result = []
+
+    lines.forEach((line, index) => {
+      const parts = line.split('|')
+      if (parts.length < 4) return
+
+      const [date, movie, hall, start] = parts
+
+      result.push({
+        rowNum: index + 1,
+        show_date: date || show_date.value,
+        data: {
+          movie_name: movie?.trim() || '',
+          hall_name: String(hall || '').replace(/[^0-9]/g, ''),
+          hall_origin: hall || '',
+          start_time: start?.trim() || '',
+          duration: '',
+        },
+        basicValid: true,
+        basicError: '',
+        isDuplicate: false,
+        statusType: 'normal',
+      })
+    })
+
+    if (!result.length) {
+      throw new Error('未识别到有效排期')
+    }
+
+    rawExcelData.value = result
+    validHallData.value = filterValidHall(result)
+    filterScheduleData()
+
+    fileStatus.value = `文本解析完成（${validHallData.value.length} 条有效数据）`
+    pasteStatus.value = 'success'
+    ElMessage.success('排期文本识别成功')
+  } catch (err) {
+    parseError.value = err.message || '文本解析失败'
+    ElMessage.error(parseError.value)
+    pasteStatus.value = 'error'
+  } finally {
+    isParsing.value = false
+  }
 }
 
 /* ================== Excel 解析 ================== */
@@ -543,6 +633,10 @@ const confirmBatchSubmit = () => {
 
 /* ================== 文件事件 ================== */
 const onFileChange = async (uploadFile) => {
+  // 清空文本粘贴相关状态
+  pasteText.value = ''
+  pasteStatus.value = ''
+
   file.value = uploadFile.raw
   parseError.value = ''
   fileStatus.value = '解析中...'
@@ -577,33 +671,75 @@ const onFileRemove = () => {
   batchSubmitList.value = []
   batchSubmitStatus.value = {}
   isBatchSubmitting.value = false
+  // 重置文本粘贴状态
+  pasteText.value = ''
+  pasteStatus.value = ''
 }
-
+// 刷新页面
+const refresh = () => {
+  window.location.reload()
+}
 /* ================== 监听筛选 ================== */
 watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleData)
 </script>
 
 <template>
-  <div class="page">
+  <!-- 核心：限制移动端最大宽度95vw，居中显示 -->
+  <div class="page" :style="{ maxWidth: '95vw', margin: '0 auto' }">
     <div class="head">
-      <h2>Excel 排期导入工具</h2>
-      <div style="margin-bottom: 12px">
-        排期日期：
-        <el-date-picker
-          v-model="show_date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          format="YYYY-MM-DD"
-          :editable="false"
-          :clearable="false"
-          :disabled-date="disabledDate"
-          style="width: 150px"
-        />
+      <div class="head-left">
+        <h2>排期导入工具</h2>
+        <div style="margin-bottom: 12px">
+          排期日期：
+          <el-date-picker
+            v-model="show_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            format="YYYY-MM-DD"
+            :editable="false"
+            :clearable="false"
+            :disabled-date="disabledDate"
+            style="width: 150px"
+            size="small"
+          />
+        </div>
+      </div>
+      <div>
+        <el-button type="warning" plain @click="refresh" size="small">刷新</el-button>
+        <router-link to="/py/" target="_blank">
+          <el-button type="primary" plain size="small">获取排期</el-button></router-link
+        >
       </div>
     </div>
 
     <el-card class="card">
-      <!-- 1. 文件选择区 + 状态展示 -->
+      <!-- 新增：文本粘贴导入区域 - 移动端适配 -->
+      <div class="paste-section" style="margin-bottom: 24px">
+        <h3 style="margin-bottom: 8px; font-size: 16px; font-weight: 600; color: #ffffff">
+          方式一：粘贴排期文本
+        </h3>
+        <el-input
+          v-model="pasteText"
+          type="textarea"
+          :rows="4"
+          placeholder="示例：
+2025-12-28|阿凡达3|7|13:35|16:53
+2025-12-28|阿凡达3|3|14:45|18:03"
+          style="margin-bottom: 8px"
+          size="small"
+        />
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
+          <el-button type="primary" @click="parsePasteText" :loading="isParsing" size="small">
+            识别文本
+          </el-button>
+          <el-tag v-if="pasteStatus === 'success'" type="success" size="small">识别成功</el-tag>
+          <el-tag v-if="pasteStatus === 'error'" type="danger" size="small">识别失败</el-tag>
+        </div>
+      </div>
+
+      <el-divider />
+
+      <!-- 1. 文件选择区 + 状态展示 - 移动端适配 -->
       <div class="file-section">
         <div class="file-upload">
           <el-upload
@@ -616,10 +752,10 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
             :disabled="isParsing"
             class="upload-component"
           >
-            <el-button type="primary" :loading="isParsing">选择 Excel 文件</el-button>
+            <el-button type="primary" :loading="isParsing" size="small">选择 Excel 文件</el-button>
           </el-upload>
         </div>
-        <div class="file-status">
+        <div class="file-status" style="flex-wrap: wrap">
           <span class="status-label">文件状态：</span>
           <el-tag
             :type="
@@ -629,6 +765,7 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
                   ? 'danger'
                   : 'info'
             "
+            size="small"
           >
             {{ fileStatus }}
           </el-tag>
@@ -636,13 +773,19 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
         <div v-if="parseError" class="error-tip">{{ parseError }}</div>
       </div>
 
-      <!-- 2. 检测结果区（overflow处理） -->
-      <div class="detect-section" v-if="file">
+      <!-- 2. 检测结果区（overflow处理）- 移动端适配 -->
+      <div class="detect-section" v-if="file || (pasteText && pasteStatus === 'success')">
         <!-- 2.1 影厅检测 -->
-        <div class="detect-item">
+        <div class="detect-item" style="flex-wrap: wrap">
           <span class="detect-label">检测到影厅：</span>
           <div class="tag-container">
-            <el-tag v-for="hall in detectResult.halls" :key="hall" type="info" class="detect-tag">
+            <el-tag
+              v-for="hall in detectResult.halls"
+              :key="hall"
+              type="info"
+              class="detect-tag"
+              size="small"
+            >
               {{ hall }}号厅
             </el-tag>
           </div>
@@ -650,22 +793,22 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
         </div>
 
         <!-- 2.2 影片检测 + 校验 -->
-        <div class="detect-item">
+        <div class="detect-item" style="flex-wrap: wrap; align-items: flex-start">
           <span class="detect-label">检测到影片：</span>
-          <div class="movie-container">
+          <div class="movie-container" style="max-height: 100px">
             <div v-for="movie in detectResult.movies" :key="movie" class="movie-item">
               <span class="movie-name">{{ movie }}</span>
-              <el-button type="text" size="small" @click="checkMovieExist(movie)" class="check-btn">
+              <el-button type="text" size="mini" @click="checkMovieExist(movie)" class="check-btn">
                 【校验】
               </el-button>
               <!-- 影片校验结果标识 -->
               <div v-if="movieCheckResult[movie] !== undefined" class="check-icon-container">
                 <!-- 存在：绿色√ -->
-                <el-icon color="#4CAF50" v-if="movieCheckResult[movie].exist">
+                <el-icon color="#4CAF50" v-if="movieCheckResult[movie].exist" size="14">
                   <Check />
                 </el-icon>
                 <!-- 不存在：黄色警告 -->
-                <el-icon color="#FFC107" v-else>
+                <el-icon color="#FFC107" v-else size="14">
                   <Warning />
                 </el-icon>
               </div>
@@ -674,22 +817,29 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
             </div>
           </div>
           <span v-if="!detectResult.movies.length" class="empty-text">无有效影片</span>
-          <el-button type="primary" plain @click="batchCheckAllMovies(detectResult.movies)"
-            >一键校验</el-button
+          <el-button
+            type="primary"
+            plain
+            @click="batchCheckAllMovies(detectResult.movies)"
+            size="small"
+            style="margin-top: 8px"
           >
+            一键校验
+          </el-button>
         </div>
       </div>
 
-      <!-- 3. 筛选区 -->
-      <div class="filter-section" v-if="file">
-        <el-form :inline="true" :model="filterForm" class="filter-form">
+      <!-- 3. 筛选区 - 移动端适配（纵向布局） -->
+      <div class="filter-section" v-if="file || (pasteText && pasteStatus === 'success')">
+        <el-form :model="filterForm" class="filter-form" label-width="100px">
           <el-form-item label="按影厅筛选：">
             <el-select
               v-model="filterForm.hallName"
               placeholder="选择影厅"
               clearable
               class="filter-select"
-              style="width: 120px"
+              style="width: 100px; margin-bottom: 8px"
+              size="small"
             >
               <el-option
                 v-for="hall in detectResult.halls"
@@ -707,6 +857,8 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
               filterable
               clearable
               class="filter-select"
+              style="width: 150px; margin-bottom: 8px"
+              size="small"
             >
               <el-option
                 v-for="movie in detectResult.movies"
@@ -717,7 +869,7 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
             </el-select>
           </el-form-item>
 
-          <el-form-item>
+          <el-form-item style="display: flex; gap: 8px; flex-wrap: wrap">
             <el-button
               @click="
                 () => {
@@ -726,16 +878,16 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
                 }
               "
               class="reset-btn"
+              size="small"
               >重置筛选</el-button
             >
-          </el-form-item>
 
-          <!-- 新增：一键提交按钮 -->
-          <el-form-item>
+            <!-- 新增：一键提交按钮 -->
             <el-button
               type="primary"
               @click="openBatchSubmitDialog"
               :disabled="isParsing || filteredData.length === 0"
+              size="small"
             >
               一键提交
             </el-button>
@@ -743,22 +895,24 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
         </el-form>
       </div>
 
-      <!-- 4. 排期列表区（overflow滚动处理） -->
+      <!-- 4. 排期列表区（overflow滚动处理）- 移动端适配 -->
       <div class="schedule-section" v-if="filteredData.length">
-        <h3 class="section-title">排期列表</h3>
-        <div class="table-container">
+        <h3 class="section-title" style="font-size: 14px">排期列表</h3>
+        <div class="table-container" style="max-height: 300px">
+          <!-- 移动端降低表格高度 -->
           <el-table
             :data="filteredData"
             border
             stripe
             style="width: 100%"
-            height="500"
+            height="auto"
             class="schedule-table"
+            size="small"
           >
-            <el-table-column label="影厅" prop="data.hall_name" width="80">
+            <el-table-column label="影厅" prop="data.hall_name" width="60">
               <template #default="scope"> {{ scope.row.data.hall_name }}号厅 </template>
             </el-table-column>
-            <el-table-column label="影片" prop="data.movie_name" min-width="150">
+            <el-table-column label="影片" prop="data.movie_name" min-width="100">
               <template #default="scope">
                 <span>{{ scope.row.data.movie_name }}</span>
                 <!-- 列表中也展示影片校验标识 -->
@@ -766,32 +920,36 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
                   v-if="movieCheckResult[scope.row.data.movie_name] !== undefined"
                   :color="movieCheckResult[scope.row.data.movie_name].exist ? '#4CAF50' : '#FFC107'"
                   style="margin-left: 4px"
+                  size="12"
                 >
                   <Check v-if="movieCheckResult[scope.row.data.movie_name].exist" />
                   <Warning v-else />
                 </el-icon>
               </template>
             </el-table-column>
-            <el-table-column label="放映时间" prop="data.start_time" width="120" />
-            <el-table-column label="状态" width="180">
+            <el-table-column label="放映时间" prop="data.start_time" width="100" />
+            <el-table-column label="状态" width="120">
               <template #default="scope">
-                <el-tag v-if="!scope.row.basicValid" type="danger">{{
+                <el-tag v-if="!scope.row.basicValid" type="danger" size="mini">{{
                   scope.row.basicError
                 }}</el-tag>
-                <el-tag v-else-if="scope.row.statusType === 'duplicate'" type="danger"
+                <el-tag v-else-if="scope.row.statusType === 'duplicate'" type="danger" size="mini"
                   >数据重复</el-tag
                 >
-                <el-tag v-else-if="scope.row.statusType === 'movie_not_exist'" type="warning"
+                <el-tag
+                  v-else-if="scope.row.statusType === 'movie_not_exist'"
+                  type="warning"
+                  size="mini"
                   >影片不存在</el-tag
                 >
-                <el-tag v-else type="success">数据正常</el-tag>
+                <el-tag v-else type="success" size="mini">数据正常</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="100">
+            <el-table-column label="操作" width="80">
               <template #default="scope">
                 <el-button
                   type="primary"
-                  size="small"
+                  size="mini"
                   @click="submitRow(scope.row)"
                   :disabled="
                     !scope.row.basicValid ||
@@ -810,41 +968,48 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
       </div>
 
       <!-- 空状态 -->
-      <div class="empty-section" v-if="file && !filteredData.length && !parseError">
+      <div
+        class="empty-section"
+        v-if="
+          (file || (pasteText && pasteStatus === 'success')) && !filteredData.length && !parseError
+        "
+      >
         暂无有效排期数据
       </div>
     </el-card>
 
-    <!-- 批量提交弹窗 -->
+    <!-- 批量提交弹窗 - 移动端适配 -->
     <el-dialog
       v-model="showBatchSubmitDialog"
       title="批量提交排期确认"
-      width="800px"
+      width="85vw"
+      fullscreen="true"
       :close-on-click-modal="false"
       :close-on-press-escape="false"
       :before-close="() => !isBatchSubmitting.value"
     >
       <div class="batch-submit-content">
-        <div class="batch-submit-tip">
+        <div class="batch-submit-tip" style="font-size: 12px">
           请确认是否添加以下排期至 <span class="hall-text">{{ filterForm.hallName || '指定' }}</span
           >号厅 日期：<span class="date-text">{{ dayjs(show_date).format('YYYY年MM月DD日') }}</span>
         </div>
 
-        <!-- 批量提交列表 -->
+        <!-- 批量提交列表 - 移动端适配 -->
         <div class="batch-submit-list">
           <el-table
             :data="batchSubmitList"
             border
             stripe
             style="width: 100%; color: #6495ed; background-color: black"
-            height="400px"
+            height="70vh"
+            size="small"
           >
-            <el-table-column label="影厅" prop="data.hall_name" width="80">
+            <el-table-column label="影厅" prop="data.hall_name" width="60">
               <template #default="scope"> {{ scope.row.data.hall_name }}号厅 </template>
             </el-table-column>
-            <el-table-column label="影片" prop="data.movie_name" min-width="200" />
-            <el-table-column label="放映时间" prop="data.start_time" width="120" />
-            <el-table-column label="提交状态" width="120">
+            <el-table-column label="影片" prop="data.movie_name" min-width="100" />
+            <el-table-column label="放映时间" prop="data.start_time" width="100" />
+            <el-table-column label="提交状态" width="100">
               <template #default="scope">
                 <el-space>
                   <!-- 加载中 -->
@@ -859,6 +1024,7 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
                   <el-icon
                     color="#4CAF50"
                     v-else-if="batchSubmitStatus[scope.$index].success === true"
+                    size="14"
                   >
                     <CircleCheck />
                   </el-icon>
@@ -866,11 +1032,12 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
                   <el-icon
                     color="#F44336"
                     v-else-if="batchSubmitStatus[scope.$index].success === false"
+                    size="14"
                   >
                     <CircleClose />
                   </el-icon>
                   <!-- 未提交 -->
-                  <span v-else class="pending-text">待提交</span>
+                  <span v-else class="pending-text" style="font-size: 12px">待提交</span>
                 </el-space>
               </template>
             </el-table-column>
@@ -879,7 +1046,11 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
       </div>
 
       <template #footer>
-        <el-button @click="showBatchSubmitDialog = false" :disabled="isBatchSubmitting.value">
+        <el-button
+          @click="showBatchSubmitDialog = false"
+          :disabled="isBatchSubmitting.value"
+          size="small"
+        >
           关闭
         </el-button>
         <el-button
@@ -887,6 +1058,7 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
           @click="confirmBatchSubmit"
           :loading="isBatchSubmitting.value"
           :disabled="isBatchSubmitting.value"
+          size="small"
         >
           确认提交
         </el-button>
@@ -896,35 +1068,67 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 </template>
 
 <style scoped>
-/* 黑色主题基础样式 */
+/* 黑色主题基础样式 - 移动端适配 */
 .page {
-  padding: 20px;
-  /* background-color: #121212;  */
+  padding: 10px 5px; /* 移动端减少内边距 */
   min-height: 100vh;
-  color: #e0e0e0; /* 浅灰色文字 */
-  overflow-x: hidden; /* 防止横向溢出 */
+  color: #e0e0e0;
+  overflow-x: hidden;
+  box-sizing: border-box; /* 关键：包含padding在宽度内 */
 }
 
-.head h2 {
-  font-size: 20px;
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 10px 0;
+  gap: 8px; /* 移动端增加间隙 */
+}
+
+.head-left h2 {
+  font-size: 18px; /* 移动端缩小标题 */
   font-weight: 600;
-  margin: 0 0 15px 0;
-  color: #ffffff; /* 白色标题 */
+  margin: 0 0 8px 0;
+  color: #ffffff;
 }
 
-/* 卡片样式 - 深色主题 */
+/* 卡片样式 - 深色主题 + 移动端适配 */
 .card {
-  height: 75vh;
-  border-radius: 12px;
-  padding: 24px;
-  background-color: #0d153130; /* 深灰色卡片 */
+  height: 80vh; /* 保证最小高度 */
+  border-radius: 8px; /* 移动端减小圆角 */
+  /* padding: 16px 10px; 移动端减少内边距 */
+  background-color: #0d153130;
   border: 1px solid #333;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-sizing: border-box;
 }
 
-/* 文件选择区 */
+/* 新增：文本粘贴区域样式 - 移动端适配 */
+.paste-section {
+  padding: 12px 8px;
+  background-color: #252525;
+  border-radius: 6px;
+  border: 1px solid #333;
+  box-sizing: border-box;
+}
+
+.paste-section :deep(.el-textarea__wrapper) {
+  background-color: #333;
+  border: 1px solid #444;
+  box-shadow: none;
+  min-height: 100px; /* 移动端文本框最小高度 */
+}
+
+.paste-section :deep(.el-textarea__inner) {
+  color: #e0e0e0;
+  font-size: 14px; /* 移动端缩小字体 */
+}
+
+/* 文件选择区 - 移动端适配 */
 .file-section {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
+  box-sizing: border-box;
 }
 
 .file-upload {
@@ -940,54 +1144,58 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  font-size: 14px;
 }
 
 .status-label {
-  font-size: 14px;
-  color: #b0b0b0; /* 灰色标签文字 */
+  font-size: 13px; /* 移动端缩小字体 */
+  color: #b0b0b0;
 }
 
 .error-tip {
-  color: #ff6b6b; /* 红色错误提示 */
-  font-size: 14px;
+  color: #ff6b6b;
+  font-size: 13px; /* 移动端缩小字体 */
 }
 
-/* 检测结果区 - overflow处理 */
+/* 检测结果区 - overflow处理 + 移动端适配 */
 .detect-section {
-  margin-bottom: 24px;
-  padding: 16px;
-  background-color: #252525; /* 更深的灰色背景 */
-  border-radius: 8px;
+  margin-bottom: 16px;
+  padding: 12px 8px;
+  background-color: #252525;
+  border-radius: 6px;
   border: 1px solid #333;
+  box-sizing: border-box;
 }
 
 .detect-item {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  font-size: 13px;
 }
 
 .detect-label {
-  font-size: 14px;
+  font-size: 13px;
   color: #b0b0b0;
   font-weight: 500;
-  min-width: 80px;
+  min-width: 70px; /* 移动端减小最小宽度 */
 }
 
-/* 影厅标签容器 - 横向滚动 */
+/* 影厅标签容器 - 横向滚动 + 移动端适配 */
 .tag-container {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   padding: 2px 0;
-  overflow-x: auto; /* 横向滚动 */
+  overflow-x: auto;
   flex: 1;
-  scrollbar-width: thin; /* 细滚动条 */
+  scrollbar-width: thin;
   scrollbar-color: #444 #252525;
+  min-width: 200px; /* 移动端最小宽度 */
 }
 
 .tag-container::-webkit-scrollbar {
-  height: 6px;
+  height: 4px; /* 移动端缩小滚动条 */
 }
 
 .tag-container::-webkit-scrollbar-track {
@@ -996,32 +1204,34 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 
 .tag-container::-webkit-scrollbar-thumb {
   background-color: #444;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .detect-tag {
   background-color: #333;
   border: 1px solid #444;
   color: #e0e0e0;
+  white-space: nowrap;
 }
 
-/* 影片容器 - 横向滚动 */
+/* 影片容器 - 横向滚动 + 移动端适配 */
 .movie-container {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   padding: 2px 0;
-  overflow-x: auto; /* 横向滚动 */
+  overflow-x: auto;
   flex: 1;
-  max-height: 120px; /* 限制高度 */
-  overflow-y: auto; /* 纵向滚动 */
+  max-height: 80px; /* 移动端降低最大高度 */
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #444 #252525;
+  min-width: 200px;
 }
 
 .movie-container::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 .movie-container::-webkit-scrollbar-track {
@@ -1030,41 +1240,42 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 
 .movie-container::-webkit-scrollbar-thumb {
   background-color: #444;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .movie-item {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 2px 6px;
   background-color: #333;
   border: 1px solid #444;
   border-radius: 4px;
-  white-space: nowrap; /* 防止文字换行 */
+  white-space: nowrap;
+  font-size: 13px;
 }
 
 .movie-name {
-  font-size: 14px;
+  font-size: 13px;
   color: #e0e0e0;
 }
 
 .check-btn {
   padding: 0;
-  color: #64b5f6; /* 浅蓝色按钮 */
+  color: #64b5f6;
+  font-size: 12px;
 }
 
-/* 校验图标容器样式 */
+/* 校验图标容器样式 - 移动端适配 */
 .check-icon-container {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .empty-icon {
-  /* 未校验时占位，保持布局一致 */
   visibility: hidden;
 }
 
@@ -1073,25 +1284,30 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 }
 
 .empty-text {
-  font-size: 14px;
+  font-size: 13px;
   color: #777;
 }
 
-/* 筛选区 */
+/* 筛选区 - 移动端适配 */
 .filter-section {
-  margin-bottom: 24px;
-  padding: 16px;
+  margin-bottom: 16px;
+  padding: 12px 8px;
   background-color: #252525;
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid #333;
+  box-sizing: border-box;
 }
 
 .filter-form {
-  width: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .filter-select :deep(.el-select) {
-  width: 200px;
+  width: 100%; /* 移动端宽度100% */
 }
 
 .filter-select :deep(.el-input__wrapper) {
@@ -1102,37 +1318,41 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 
 .filter-select :deep(.el-input__inner) {
   color: #e0e0e0;
+  font-size: 13px;
 }
 
 .reset-btn {
   background-color: #333;
   border: 1px solid #444;
   color: #e0e0e0;
+  font-size: 13px;
 }
 
-/* 排期列表区 - overflow滚动处理 */
+/* 排期列表区 - overflow滚动处理 + 移动端适配 */
 .schedule-section {
-  margin-top: 16px;
+  margin-top: 12px;
+  box-sizing: border-box;
 }
 
 .section-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
-  margin: 0 0 12px 0;
+  margin: 0 0 8px 0;
   color: #ffffff;
 }
 
-/* 表格容器 - 固定高度+滚动 */
+/* 表格容器 - 固定高度+滚动 + 移动端适配 */
 .table-container {
-  max-height: 600px; /* 固定最大高度 */
-  overflow-y: auto; /* 纵向滚动 */
+  max-height: 250px; /* 移动端降低表格高度 */
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #444 #1e1e1e;
-  border-radius: 8px;
+  border-radius: 6px;
+  box-sizing: border-box;
 }
 
 .table-container::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 .table-container::-webkit-scrollbar-track {
@@ -1141,10 +1361,10 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
 
 .table-container::-webkit-scrollbar-thumb {
   background-color: #444;
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
-/* 深色表格样式 */
+/* 深色表格样式 - 移动端适配 */
 .schedule-table :deep(.el-table) {
   --el-table-header-text-color: #e0e0e0;
   --el-table-row-hover-bg-color: #2a2a2a;
@@ -1152,15 +1372,20 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
   --el-table-text-color: #e0e0e0;
   background-color: #1e1e1e;
   color: #e0e0e0;
+  font-size: 13px;
 }
 
 .schedule-table :deep(.el-table th) {
   background-color: #252525;
   border-bottom: 1px solid #444;
+  font-size: 12px;
+  padding: 6px 4px;
 }
 
 .schedule-table :deep(.el-table td) {
   border-bottom: 1px solid #333;
+  font-size: 12px;
+  padding: 6px 4px;
 }
 
 .schedule-table :deep(.el-table--border) {
@@ -1171,54 +1396,61 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
   border-right: 1px solid #444;
 }
 
-/* 空状态 */
+/* 空状态 - 移动端适配 */
 .empty-section {
   text-align: center;
-  padding: 40px;
+  padding: 20px 10px;
   color: #777;
-  font-size: 16px;
+  font-size: 14px;
 }
 
-/* Element Plus 组件深色适配 */
+/* Element Plus 组件深色适配 + 移动端 */
 :deep(.el-button--primary) {
   background-color: #1976d2;
   border-color: #1976d2;
   color: white;
+  font-size: 13px;
 }
 
 :deep(.el-tag--success) {
   background-color: #2e7d32;
   border-color: #2e7d32;
   color: white;
+  font-size: 12px;
 }
 
 :deep(.el-tag--danger) {
   background-color: #c62828;
   border-color: #c62828;
   color: white;
+  font-size: 12px;
 }
 
 :deep(.el-tag--warning) {
   background-color: #f57c00;
   border-color: #f57c00;
   color: white;
+  font-size: 12px;
 }
 
 :deep(.el-tag--info) {
   background-color: #333;
   border-color: #444;
   color: white;
+  font-size: 12px;
 }
 
-/* 批量提交弹窗样式 */
+/* 批量提交弹窗样式 - 移动端适配 */
 .batch-submit-content {
   color: #e0e0e0;
+  font-size: 13px;
+  box-sizing: border-box;
 }
 
 .batch-submit-tip {
-  font-size: 14px;
-  margin-bottom: 16px;
-  padding: 8px;
+  font-size: 12px;
+  margin-bottom: 12px;
+  padding: 6px;
   background-color: #252525;
   border-radius: 4px;
 }
@@ -1236,37 +1468,82 @@ watch([() => filterForm.hallName, () => filterForm.movieName], filterScheduleDat
   --el-table-text-color: #e0e0e0;
   background-color: #1e1e1e;
   color: #e0e0e0;
+  font-size: 12px;
 }
 
 .batch-submit-list :deep(.el-table th) {
   background-color: #252525;
   border-bottom: 1px solid #444;
+  font-size: 12px;
+  padding: 4px;
 }
 
 .batch-submit-list :deep(.el-table td) {
   border-bottom: 1px solid #333;
+  font-size: 12px;
+  padding: 4px;
 }
 
 .pending-text {
   color: #999;
-  font-size: 14px;
+  font-size: 12px;
 }
 
-/* 弹窗样式适配 */
+/* 弹窗样式适配 - 移动端 */
 :deep(.el-dialog) {
   background-color: #1e1e1e;
   border: 1px solid #333;
+  border-radius: 8px;
+  padding: 0;
 }
 
 :deep(.el-dialog__header) {
   border-bottom: 1px solid #333;
+  padding: 12px 16px;
 }
 
 :deep(.el-dialog__title) {
   color: #e0e0e0;
+  font-size: 16px;
+}
+
+:deep(.el-dialog__body) {
+  padding: 12px 16px;
 }
 
 :deep(.el-dialog__footer) {
   border-top: 1px solid #333;
+  padding: 12px 16px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+@media screen and (max-width: 755px) {
+  :deep(.el-card__body) {
+    padding: 2px;
+  }
+}
+/* 响应式适配 - 小屏手机 */
+@media screen and (max-width: 375px) {
+  .page {
+    padding: 8px 4px;
+  }
+
+  .head-left h2 {
+    font-size: 16px;
+  }
+
+  .card {
+    padding: 10px 6px;
+  }
+
+  .table-container {
+    max-height: 200px;
+  }
+
+  .batch-submit-list :deep(.el-table) {
+    height: 150px;
+  }
 }
 </style>

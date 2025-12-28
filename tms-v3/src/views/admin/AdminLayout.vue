@@ -252,6 +252,7 @@ onUnmounted(() => {
     >
       <router-link to="/admin/list" @click="closeMobileMenu"> 排期列表 </router-link>
       <router-link to="/admin/manageh5" @click="closeMobileMenu"> 排期管理 </router-link>
+      <router-link to="/admin/import" @click="closeMobileMenu"> Excel 导入 </router-link>
       <router-link to="/admin/movies" @click="closeMobileMenu"> 影片管理 </router-link>
       <router-link to="/admin/settings" @click="closeMobileMenu"> 系统设置 </router-link>
       <!-- 移动端退出选项 -->
